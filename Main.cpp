@@ -32,17 +32,15 @@ bool IsBorderless() {
     return borderless;
 }
 
-LONG GetWindowStyle() {
-    DWORD style = WS_VISIBLE | WS_MINIMIZEBOX;
-    if (!IsWindowed() || IsBorderless())
-        style |= WS_POPUP;
+LONG GetWindowStyle(LONG style) {
+    if (IsWindowed() && IsBorderless())
+        return WS_VISIBLE | WS_MINIMIZEBOX | WS_POPUP;
     return style;
 }
 
-LONG GetWindowClassStyle() {
-    LONG style = CS_CLASSDC;
-    if (IsWindowed())
-        style |= CS_DBLCLKS;
+LONG GetWindowClassStyle(LONG style) {
+    if (IsWindowed() && IsBorderless())
+        return CS_CLASSDC | CS_DBLCLKS;
     return style;
 }
 
@@ -99,6 +97,8 @@ WindowRect CalcWindowRect(int X, int Y, int Width, int Height, bool StoreInitial
 }
 
 int WINAPI MyWndProc(HWND hWnd, UINT uCmd, WPARAM wParam, LPARAM lParam) {
+    if (!OrigWndProc)
+        return 0;
     if (IsWindowed() && IsBorderless()) {
         static POINT ptStart;
         static POINT ptOffset;
@@ -145,53 +145,64 @@ int WINAPI MyWndProc(HWND hWnd, UINT uCmd, WPARAM wParam, LPARAM lParam) {
             }
         }
     }
-    return CallWinApiAndReturnDynGlobal<int>(OrigWndProc, hWnd, uCmd, wParam, lParam);
+    return CallWindowProc((WNDPROC)OrigWndProc, hWnd, uCmd, wParam, lParam);
 }
 
 HWND WINAPI MyCreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpWindowName, DWORD dwStyle,
     int X, int Y, int nWidth, int nHeight, HWND hWndParent, HMENU hMenu, HINSTANCE hInstance, LPVOID lpParam)
 {
-    HWND h = 0;
-    if (IsWindowed()) {
-        EnableDPIAwareness();
-        auto rect = CalcWindowRect(X, Y, nWidth, nHeight, false);
-        h = CallWinApiAndReturnDynGlobal<HWND>(OrigCreateWindow, dwExStyle, lpClassName, lpWindowName,
-            GetWindowStyle(), rect.X, rect.Y, rect.Width, rect.Height, hWndParent, hMenu, hInstance, lpParam);
+    if (OrigCreateWindow) {
+        HWND h = 0;
+        if (IsWindowed() && IsBorderless()) {
+            EnableDPIAwareness();
+            auto rect = CalcWindowRect(X, Y, nWidth, nHeight, false);
+            return CallWinApiAndReturnDynGlobal<HWND>(OrigCreateWindow, dwExStyle, lpClassName, lpWindowName,
+                GetWindowStyle(dwStyle), rect.X, rect.Y, rect.Width, rect.Height, hWndParent, hMenu, hInstance, lpParam);
+        }
+        else {
+            return CallWinApiAndReturnDynGlobal<HWND>(OrigCreateWindow, dwExStyle, lpClassName, lpWindowName,
+                dwStyle, X, Y, nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam);
+        }
     }
-    else {
-        h = CallWinApiAndReturnDynGlobal<HWND>(OrigCreateWindow, dwExStyle, lpClassName, lpWindowName,
-            dwStyle, X, Y, nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam);
-    }
-    return h;
+    return NULL;
 }
 
 BOOL WINAPI MyAdjustWindowRect(LPRECT lpRect, DWORD dwStyle, BOOL bMenu) {
-    return CallWinApiAndReturnDynGlobal<BOOL>(OrigAdjustWindowRect, lpRect, GetWindowStyle(), bMenu);
+    return OrigAdjustWindowRect ? CallWinApiAndReturnDynGlobal<BOOL>(OrigAdjustWindowRect, lpRect, GetWindowStyle(dwStyle), bMenu) : FALSE;
 }
 
 BOOL WINAPI MySetWindowLong(HWND hWnd, int nIndex, DWORD dwNewLong) {
-    return CallWinApiAndReturnDynGlobal<BOOL>(OrigSetWindowLong, hWnd, nIndex, GetWindowStyle());
+    return OrigSetWindowLong ? CallWinApiAndReturnDynGlobal<BOOL>(OrigSetWindowLong, hWnd, nIndex, GetWindowStyle(dwNewLong)) : FALSE;
 }
 
 BOOL WINAPI MyMoveWindow(HWND hWnd, int X, int Y, int Width, int Height, BOOL bRepaint) {
-    if (IsWindowed() && IsBorderless()) {
-        auto rect = CalcWindowRect(X, Y, Width, Height, true);
-        return CallWinApiAndReturnDynGlobal<BOOL>(OrigMoveWindow, hWnd, rect.X, rect.Y, rect.Width, rect.Height, bRepaint);
+    if (OrigMoveWindow) {
+        if (IsWindowed() && IsBorderless()) {
+            auto rect = CalcWindowRect(X, Y, Width, Height, true);
+            return CallWinApiAndReturnDynGlobal<BOOL>(OrigMoveWindow, hWnd, rect.X, rect.Y, rect.Width, rect.Height, bRepaint);
+        }
+        else
+            return CallWinApiAndReturnDynGlobal<BOOL>(OrigMoveWindow, hWnd, X, Y, Width, Height, bRepaint);
     }
-    else
-        return CallWinApiAndReturnDynGlobal<BOOL>(OrigMoveWindow, hWnd, X, Y, Width, Height, bRepaint);
+    return FALSE;
 }
 
 ATOM WINAPI MyRegisterClassA(WNDCLASSA *lpWndClass) {
-    if (IsWindowed() && IsBorderless)
-        lpWndClass->style = GetWindowClassStyle();
-    return CallWinApiAndReturnDynGlobal<ATOM>(OrigRegisterClass, lpWndClass);
+    if (OrigRegisterClass) {
+        if (IsWindowed() && IsBorderless())
+            lpWndClass->style = GetWindowClassStyle(lpWndClass->style);
+        return CallWinApiAndReturnDynGlobal<ATOM>(OrigRegisterClass, lpWndClass);
+    }
+    return 0;
 }
 
 BOOL WINAPI MySetCursorPos(int X, int Y) {
-    if (IsWindowed() && IsBorderless())
-        return true;
-    return CallWinApiAndReturnDynGlobal<BOOL>(OrigSetCursorPos, X, Y);
+    if (OrigSetCursorPos) {
+        if (IsWindowed() && IsBorderless())
+            return TRUE;
+        return CallWinApiAndReturnDynGlobal<BOOL>(OrigSetCursorPos, X, Y);
+    }
+    return FALSE;
 }
 
 int METHOD GetNoLossFocusVariable(void *, DUMMY_ARG, char const *, int) {
@@ -212,7 +223,7 @@ public:
             patch::RedirectCall(0x5E58E2, MyAdjustWindowRect);
             OrigSetWindowLong = patch::RedirectCall(0x5E58D4, MySetWindowLong);
             OrigMoveWindow = patch::RedirectCall(0x5E590A, MyMoveWindow);
-            patch::SetPointer(0x848488, MySetCursorPos);
+            OrigSetCursorPos = patch::SetPointer(0x848488, MySetCursorPos);
             patch::RedirectCall(0x5F1751, GetNoLossFocusVariable);
         }
     }
