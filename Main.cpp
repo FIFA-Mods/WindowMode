@@ -8,6 +8,7 @@ AddrType OrigRegisterClass = 0;
 AddrType OrigAdjustWindowRect = 0;
 AddrType OrigSetWindowLong = 0;
 AddrType OrigMoveWindow = 0;
+AddrType OrigSetCursorPos = 0;
 
 bool IsWindowed() {
     static bool windowed = false;
@@ -98,7 +99,7 @@ WindowRect CalcWindowRect(int X, int Y, int Width, int Height, bool StoreInitial
 }
 
 int WINAPI MyWndProc(HWND hWnd, UINT uCmd, WPARAM wParam, LPARAM lParam) {
-    if (IsWindowed()) {
+    if (IsWindowed() && IsBorderless()) {
         static POINT ptStart;
         static POINT ptOffset;
         static BOOL bDragging = FALSE;
@@ -154,11 +155,11 @@ HWND WINAPI MyCreateWindowExA(DWORD dwExStyle, LPCSTR lpClassName, LPCSTR lpWind
     if (IsWindowed()) {
         EnableDPIAwareness();
         auto rect = CalcWindowRect(X, Y, nWidth, nHeight, false);
-        h = CallWinApiAndReturnDynGlobal<HWND>(OrigCreateWindow, WS_EX_ACCEPTFILES, lpClassName, lpWindowName,
+        h = CallWinApiAndReturnDynGlobal<HWND>(OrigCreateWindow, dwExStyle, lpClassName, lpWindowName,
             GetWindowStyle(), rect.X, rect.Y, rect.Width, rect.Height, hWndParent, hMenu, hInstance, lpParam);
     }
     else {
-        h = CallWinApiAndReturnDynGlobal<HWND>(OrigCreateWindow, WS_EX_ACCEPTFILES, lpClassName, lpWindowName,
+        h = CallWinApiAndReturnDynGlobal<HWND>(OrigCreateWindow, dwExStyle, lpClassName, lpWindowName,
             dwStyle, X, Y, nWidth, nHeight, hWndParent, hMenu, hInstance, lpParam);
     }
     return h;
@@ -168,26 +169,33 @@ BOOL WINAPI MyAdjustWindowRect(LPRECT lpRect, DWORD dwStyle, BOOL bMenu) {
     return CallWinApiAndReturnDynGlobal<BOOL>(OrigAdjustWindowRect, lpRect, GetWindowStyle(), bMenu);
 }
 
-BOOL WINAPI MyAdjustWindowRectEx(LPRECT lpRect, DWORD dwStyle, BOOL bMenu, DWORD dwExStyle) {
-    return AdjustWindowRectEx(lpRect, GetWindowStyle(), bMenu, dwExStyle);
-}
-
 BOOL WINAPI MySetWindowLong(HWND hWnd, int nIndex, DWORD dwNewLong) {
     return CallWinApiAndReturnDynGlobal<BOOL>(OrigSetWindowLong, hWnd, nIndex, GetWindowStyle());
 }
 
 BOOL WINAPI MyMoveWindow(HWND hWnd, int X, int Y, int Width, int Height, BOOL bRepaint) {
-    auto rect = CalcWindowRect(X, Y, Width, Height, true);
-    return CallWinApiAndReturnDynGlobal<BOOL>(OrigMoveWindow, hWnd, rect.X, rect.Y, rect.Width, rect.Height, bRepaint);
+    if (IsWindowed() && IsBorderless()) {
+        auto rect = CalcWindowRect(X, Y, Width, Height, true);
+        return CallWinApiAndReturnDynGlobal<BOOL>(OrigMoveWindow, hWnd, rect.X, rect.Y, rect.Width, rect.Height, bRepaint);
+    }
+    else
+        return CallWinApiAndReturnDynGlobal<BOOL>(OrigMoveWindow, hWnd, X, Y, Width, Height, bRepaint);
 }
 
 ATOM WINAPI MyRegisterClassA(WNDCLASSA *lpWndClass) {
-    lpWndClass->style = GetWindowClassStyle();
+    if (IsWindowed() && IsBorderless)
+        lpWndClass->style = GetWindowClassStyle();
     return CallWinApiAndReturnDynGlobal<ATOM>(OrigRegisterClass, lpWndClass);
 }
 
-BOOL __stdcall MySetCursorPos(int X, int Y) {
-    return true;
+BOOL WINAPI MySetCursorPos(int X, int Y) {
+    if (IsWindowed() && IsBorderless())
+        return true;
+    return CallWinApiAndReturnDynGlobal<BOOL>(OrigSetCursorPos, X, Y);
+}
+
+int METHOD GetNoLossFocusVariable(void *, DUMMY_ARG, char const *, int) {
+    return IsWindowed() ? 1 : 0;
 }
 
 class WindowMode {
@@ -203,14 +211,9 @@ public:
             OrigAdjustWindowRect = patch::RedirectCall(0x5E5D39, MyAdjustWindowRect);
             patch::RedirectCall(0x5E58E2, MyAdjustWindowRect);
             OrigSetWindowLong = patch::RedirectCall(0x5E58D4, MySetWindowLong);
-            patch::MakeUnconditional(0x5F1758); // lossfocus
-            // disable minimize
-            //patch::NopWinApiCall(0x5E5C4B, 2);
-            //patch::NopWinApiCall(0x5E5BD9, 2);
-            // replace SW_NORMAL/SW_RESTORE by SW_SHOW
-            //patch::SetUChar(0x74A474 + 1, SW_SHOW);
             OrigMoveWindow = patch::RedirectCall(0x5E590A, MyMoveWindow);
             patch::SetPointer(0x848488, MySetCursorPos);
+            patch::RedirectCall(0x5F1751, GetNoLossFocusVariable);
         }
     }
 } windowMode;
